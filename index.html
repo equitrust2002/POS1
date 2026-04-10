@@ -1,0 +1,332 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>JMB Pro POS | Mobile Master</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/@zxing/library@latest"></script>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
+    <style>
+        @media print {
+            body * { visibility: hidden; }
+            #print-area, #print-area * { visibility: visible; }
+            #print-area { position: absolute; left: 0; top: 0; width: 100%; display: block !important; }
+        }
+        body { touch-action: manipulation; overflow: hidden; background: #f8fafc; }
+        .view-panel { height: calc(100vh - 64px); display: flex; flex-direction: column; width: 100%; }
+        #cart-panel { transition: transform 0.4s cubic-bezier(0.1, 0.7, 0.1, 1); z-index: 60; }
+        .cart-hidden { transform: translateY(calc(100% - 65px)); }
+        #scanner-view { width: 100%; height: 280px; background: #000; border-radius: 1.5rem; overflow: hidden; }
+        video { width: 100%; height: 100%; object-fit: cover; }
+        /* Side Panel Overlay Fix */
+        #sidebar-overlay { transition: opacity 0.3s ease; pointer-events: none; opacity: 0; }
+        #sidebar-overlay.active { pointer-events: auto; opacity: 1; }
+        .custom-scroll::-webkit-scrollbar { width: 0px; }
+    </style>
+</head>
+<body class="font-sans text-slate-800 antialiased">
+
+    <div id="sidebar-overlay" onclick="toggleSidebar(true)" class="fixed inset-0 bg-black/50 z-[75]"></div>
+
+    <nav class="bg-green-700 h-16 flex items-center justify-between px-4 shadow-lg z-[70] relative">
+        <button onclick="toggleSidebar(false)" class="text-white text-2xl w-10 h-10 flex items-center justify-center rounded-lg active:bg-green-800">
+            <i class="fas fa-bars"></i>
+        </button>
+        <div class="flex flex-col items-center">
+            <span class="text-white font-black italic tracking-tighter">JMB CRAFT <span class="text-green-300">POS</span></span>
+        </div>
+        <button onclick="openScanner('cart')" class="bg-white text-green-700 w-10 h-10 rounded-xl shadow-md flex items-center justify-center active:scale-90 transition-transform">
+            <i class="fas fa-barcode"></i>
+        </button>
+    </nav>
+
+    <aside id="sidebar" class="fixed inset-y-0 left-0 w-72 bg-white shadow-2xl z-[80] transform -translate-x-full transition-transform duration-300 ease-in-out border-r">
+        <div class="p-8 bg-green-800 text-white font-black italic border-b border-green-900">JMB ENTERPRISE</div>
+        <nav class="p-4 space-y-3">
+            <button onclick="switchView('sales')" class="w-full flex p-4 hover:bg-green-50 rounded-2xl font-bold gap-4 items-center text-green-800 transition-all active:scale-95"><i class="fas fa-cash-register"></i> Sales Grid</button>
+            <button onclick="switchView('inventory')" class="w-full flex p-4 hover:bg-green-50 rounded-2xl font-bold gap-4 items-center text-green-800 transition-all active:scale-95"><i class="fas fa-boxes"></i> Stock Control</button>
+            <button onclick="switchView('history')" class="w-full flex p-4 hover:bg-green-50 rounded-2xl font-bold gap-4 items-center text-green-800 transition-all active:scale-95"><i class="fas fa-receipt"></i> Reports/Reprint</button>
+            <button onclick="switchView('settings')" class="w-full flex p-4 hover:bg-green-50 rounded-2xl font-bold gap-4 items-center text-green-800 transition-all active:scale-95"><i class="fas fa-cog"></i> Print Setup</button>
+            <hr class="my-6 border-slate-100">
+            <button onclick="exportCSV()" class="w-full bg-green-100 text-green-700 py-4 rounded-xl font-black text-xs uppercase tracking-widest active:bg-green-200">Export Detailed CSV</button>
+        </nav>
+    </aside>
+
+    <main class="relative overflow-hidden">
+        
+        <section id="view-sales" class="view-panel">
+            <div class="p-4 bg-white border-b sticky top-0 z-10">
+                <div class="relative">
+                    <i class="fas fa-search absolute left-4 top-1/2 -translate-y-1/2 text-slate-400"></i>
+                    <input type="text" id="search-input" oninput="renderSales()" placeholder="Search product..." class="w-full pl-10 pr-4 py-4 bg-slate-100 rounded-2xl border-none outline-none focus:ring-2 ring-green-600 shadow-inner">
+                </div>
+            </div>
+            <div id="sales-grid" class="grid grid-cols-2 gap-3 p-4 overflow-y-auto pb-40 custom-scroll"></div>
+        </section>
+
+        <section id="view-inventory" class="view-panel hidden p-6 overflow-y-auto bg-white">
+            <div class="flex justify-between items-center mb-6">
+                <h2 class="font-black text-2xl text-green-800">INVENTORY</h2>
+                <button onclick="openItemModal()" class="bg-green-700 text-white px-6 py-3 rounded-2xl font-black text-xs shadow-lg">+ NEW ITEM</button>
+            </div>
+            <div id="inventory-list" class="space-y-4 pb-20"></div>
+        </section>
+
+        <section id="view-history" class="view-panel hidden p-6 overflow-y-auto bg-slate-50">
+            <h2 class="font-black text-2xl text-green-800 mb-6 uppercase tracking-tighter">Transaction Reports</h2>
+            <div id="history-list" class="space-y-4 pb-24"></div>
+        </section>
+
+        <section id="view-settings" class="view-panel hidden p-6 overflow-y-auto bg-white">
+            <h2 class="font-black text-2xl text-green-800 mb-6 uppercase">Store Settings</h2>
+            <div class="space-y-4 max-w-sm">
+                <div class="space-y-1"><label class="text-[10px] font-bold text-slate-400">STORE NAME</label><input type="text" id="set-h" class="w-full p-4 border rounded-2xl font-bold" onchange="saveSet()"></div>
+                <div class="space-y-1"><label class="text-[10px] font-bold text-slate-400">ADDRESS / TIN</label><input type="text" id="set-s" class="w-full p-4 border rounded-2xl font-bold" onchange="saveSet()"></div>
+                <div class="space-y-1"><label class="text-[10px] font-bold text-slate-400">FOOTER MESSAGE</label><input type="text" id="set-f" class="w-full p-4 border rounded-2xl font-bold" onchange="saveSet()"></div>
+                <div class="space-y-1"><label class="text-[10px] font-bold text-slate-400">PRINTER PAPER SIZE</label>
+                    <select id="set-size" class="w-full p-4 border rounded-2xl font-bold bg-slate-50" onchange="saveSet()">
+                        <option value="58mm">58mm Thermal</option>
+                        <option value="48mm">48mm Bluetooth Mini</option>
+                        <option value="a4">Standard A4 Office</option>
+                    </select>
+                </div>
+            </div>
+        </section>
+
+        <div id="cart-panel" class="fixed inset-x-0 bottom-0 bg-white border-t-4 border-green-700 shadow-[0_-20px_50px_rgba(0,0,0,0.1)] cart-hidden rounded-t-[2.5rem]">
+            <div onclick="toggleCart()" class="h-16 flex items-center justify-between px-8 cursor-pointer active:bg-slate-50">
+                <div class="flex items-center gap-3"><i class="fas fa-shopping-basket text-green-600"></i><span class="font-black text-slate-400 text-xs">CURRENT TICKET</span></div>
+                <span id="total-display" class="text-2xl font-black text-green-800">₱0.00</span>
+                <i id="cart-chevron" class="fas fa-chevron-up text-green-700 transition-transform duration-300"></i>
+            </div>
+            <div id="cart-items" class="p-6 space-y-4 max-h-[50vh] overflow-y-auto border-t border-slate-50 custom-scroll"></div>
+            <div class="p-8 bg-slate-50 safe-bottom">
+                <button onclick="checkout()" class="w-full bg-green-600 text-white py-6 rounded-[2rem] font-black text-2xl shadow-xl active:scale-95 transition-all">PROCESS PAYMENT</button>
+                <button onclick="clearCart()" class="w-full py-4 text-red-400 text-[10px] font-black uppercase tracking-[0.2em] mt-2">Void Ticket</button>
+            </div>
+        </div>
+    </main>
+
+    <div id="scanner-modal" class="hidden fixed inset-0 bg-black/95 z-[100] flex flex-col items-center justify-center p-6">
+        <div id="scanner-view" class="border-2 border-white/20 shadow-2xl"><video id="video-feed"></video></div>
+        <div class="mt-8 text-center">
+            <p class="text-green-400 font-black animate-pulse uppercase tracking-widest text-sm">Focus Barcode in Box</p>
+            <button onclick="closeScanner()" class="mt-10 bg-white text-black px-12 py-4 rounded-full font-black text-xs uppercase shadow-xl active:scale-95 transition-all">Close Camera</button>
+        </div>
+    </div>
+
+    <div id="item-modal" class="hidden fixed inset-0 bg-black/70 z-[100] flex items-center justify-center p-4">
+        <div class="bg-white w-full max-w-sm rounded-[2.5rem] p-8 shadow-2xl max-h-[90vh] overflow-y-auto">
+            <h3 class="font-black text-2xl text-green-800 mb-6 italic">ITEM MASTER</h3>
+            <div class="space-y-4">
+                <div class="flex flex-col items-center gap-3 border-2 border-dashed border-slate-200 p-4 rounded-3xl bg-slate-50">
+                    <img id="prev-img" src="https://via.placeholder.com/150" class="w-24 h-24 rounded-2xl object-cover shadow-md">
+                    <input type="file" id="inp-file" accept="image/*" class="text-[10px]" onchange="handleImg(this)">
+                </div>
+                <input type="text" id="inp-name" placeholder="Item Name" class="w-full p-4 bg-slate-100 rounded-2xl border-none outline-none focus:ring-2 ring-green-600">
+                <div class="flex gap-2">
+                    <input type="text" id="inp-barcode" placeholder="Barcode ID" class="w-full p-4 bg-slate-100 rounded-2xl border-none outline-none font-mono text-green-700">
+                    <button onclick="openScanner('input')" class="bg-green-100 text-green-700 px-5 rounded-2xl active:bg-green-200"><i class="fas fa-barcode"></i></button>
+                </div>
+                <div class="flex gap-3">
+                    <input type="number" id="inp-price" placeholder="Price (₱)" class="w-1/2 p-4 bg-slate-100 rounded-2xl border-none outline-none">
+                    <input type="number" id="inp-stock" placeholder="Stock Qty" class="w-1/2 p-4 bg-slate-100 rounded-2xl border-none outline-none">
+                </div>
+                <button onclick="saveItem()" class="w-full bg-green-700 text-white py-5 rounded-2xl font-black shadow-xl active:scale-95 transition-all mt-4">SAVE TO STOCK</button>
+                <button onclick="closeItemModal()" class="w-full text-slate-400 py-2 text-[10px] font-black uppercase">Cancel</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="print-area" class="hidden font-mono text-black p-4 bg-white"></div>
+
+    <script>
+        // --- DATA STATE ---
+        let items = JSON.parse(localStorage.getItem('jmb_v12_items')) || [];
+        let receipts = JSON.parse(localStorage.getItem('jmb_v12_receipts')) || [];
+        let config = JSON.parse(localStorage.getItem('jmb_v12_set')) || { h: 'JMB CRAFT ENTERPRISE', s: 'Cebu / Claver, Surigao', f: 'Thank you for your trust!', size: '58mm' };
+        let cart = [];
+        let activeImg = null;
+        let scanMode = 'cart';
+        const codeReader = new ZXing.BrowserMultiFormatReader();
+
+        function sync() {
+            localStorage.setItem('jmb_v12_items', JSON.stringify(items));
+            localStorage.setItem('jmb_v12_receipts', JSON.stringify(receipts));
+            localStorage.setItem('jmb_v12_set', JSON.stringify(config));
+        }
+
+        // --- NAVIGATION ENGINE ---
+        function toggleSidebar(forceClose) {
+            const sidebar = document.getElementById('sidebar');
+            const overlay = document.getElementById('sidebar-overlay');
+            const isVisible = sidebar.classList.contains('translate-x-0');
+
+            if (forceClose || isVisible) {
+                sidebar.classList.replace('translate-x-0', '-translate-x-full');
+                overlay.classList.remove('active');
+            } else {
+                sidebar.classList.replace('-translate-x-full', 'translate-x-0');
+                overlay.classList.add('active');
+            }
+        }
+
+        function switchView(v) {
+            document.querySelectorAll('.view-panel').forEach(s => s.classList.add('hidden'));
+            document.getElementById(`view-${v}`).classList.remove('hidden');
+            toggleSidebar(true); // Close drawer after selection
+            
+            // Refresh views
+            if(v === 'sales') renderSales();
+            if(v === 'inventory') renderInventory();
+            if(v === 'history') renderHistory();
+            if(v === 'settings') loadSet();
+        }
+
+        function toggleCart() {
+            const panel = document.getElementById('cart-panel');
+            const icon = document.getElementById('cart-chevron');
+            panel.classList.toggle('cart-hidden');
+            icon.classList.toggle('rotate-180');
+        }
+
+        // --- SCANNER ENGINE ---
+        async function openScanner(mode) {
+            scanMode = mode;
+            document.getElementById('scanner-modal').classList.remove('hidden');
+            try {
+                const videoDevices = await codeReader.listVideoInputDevices();
+                const selected = videoDevices[0].deviceId;
+                codeReader.decodeFromVideoDevice(selected, 'video-feed', (result, err) => {
+                    if (result) {
+                        if(scanMode === 'cart') {
+                            const found = items.find(i => i.barcode === result.text);
+                            if(found) { 
+                                addToCart(found.id); 
+                                if(document.getElementById('cart-panel').classList.contains('cart-hidden')) toggleCart(); 
+                            } else { alert("Item not in system: " + result.text); }
+                        } else {
+                            document.getElementById('inp-barcode').value = result.text;
+                        }
+                        closeScanner();
+                    }
+                });
+            } catch (e) { alert("Camera Permission Required"); closeScanner(); }
+        }
+
+        function closeScanner() { codeReader.reset(); document.getElementById('scanner-modal').classList.add('hidden'); }
+
+        // --- CORE FUNCTIONS ---
+        function renderSales() {
+            const q = document.getElementById('search-input').value.toLowerCase();
+            const filtered = items.filter(i => i.name.toLowerCase().includes(q));
+            document.getElementById('sales-grid').innerHTML = filtered.map(i => `
+                <div onclick="addToCart(${i.id})" class="bg-white p-3 rounded-[2rem] border border-slate-100 shadow-sm active:scale-95 transition-all text-center flex flex-col items-center">
+                    <img src="${i.img || 'https://via.placeholder.com/80'}" class="w-full h-24 object-cover rounded-3xl mb-3">
+                    <p class="text-[10px] font-black uppercase text-slate-500 truncate w-full px-1">${i.name}</p>
+                    <p class="text-green-700 font-black text-lg">₱${i.price.toLocaleString()}</p>
+                    <p class="text-[8px] text-slate-300 font-bold uppercase">Stock: ${i.stock}</p>
+                </div>
+            `).join('');
+        }
+
+        function addToCart(id) {
+            const item = items.find(i => i.id === id);
+            if(item.stock <= 0) return alert("NO STOCK");
+            const inCart = cart.find(c => c.id === id);
+            if(inCart) inCart.qty++;
+            else cart.push({...item, qty: 1});
+            updateCartUI();
+        }
+
+        function updateCartUI() {
+            let total = 0;
+            document.getElementById('cart-items').innerHTML = cart.map((c, idx) => {
+                total += (c.price * c.qty);
+                return `<div class="flex items-center justify-between bg-slate-50 p-4 rounded-3xl border border-slate-100">
+                    <img src="${c.img || 'https://via.placeholder.com/40'}" class="w-10 h-10 object-cover rounded-xl shadow-sm">
+                    <div class="flex-1 ml-4"><p class="text-xs font-black uppercase text-slate-700">${c.name}</p><p class="text-[10px] text-slate-400">₱${c.price} x ${c.qty}</p></div>
+                    <div class="flex items-center gap-4"><span class="font-black text-green-700">₱${(c.price * c.qty).toLocaleString()}</span><button onclick="cart.splice(${idx},1);updateCartUI()" class="text-red-200 text-xl"><i class="fas fa-times-circle"></i></button></div>
+                </div>`;
+            }).join('');
+            document.getElementById('total-display').innerText = `₱${total.toLocaleString()}`;
+        }
+
+        function checkout() {
+            if(cart.length === 0) return;
+            const total = cart.reduce((s, i) => s + (i.price * i.qty), 0);
+            const tx = { id: 'TXN-'+Date.now(), date: new Date().toLocaleString(), items: [...cart], total, status: 'PAID' };
+            tx.items.forEach(ci => { const m = items.find(i => i.id === ci.id); if(m) m.stock -= ci.qty; });
+            receipts.unshift(tx);
+            sync();
+            printReceipt(tx);
+            cart = []; updateCartUI(); renderSales(); toggleCart();
+        }
+
+        function printReceipt(tx) {
+            const area = document.getElementById('print-area');
+            const size = config.size === 'a4' ? '210mm' : config.size;
+            area.style.width = size;
+            area.innerHTML = `<center><b>${config.h}</b><br>${config.s}<br><small>${tx.date}</small><br><b>${tx.id}</b></center><hr style="border-top:1px dashed #000; margin:10px 0">
+                ${tx.items.map(i => `<div style="display:flex;justify-content:space-between"><span>${i.name} x${i.qty}</span><span>₱${i.price * i.qty}</span></div>`).join('')}
+                <hr style="border-top:1px dashed #000; margin:10px 0"><div style="display:flex;justify-content:space-between;font-weight:bold"><span>TOTAL</span><span>₱${tx.total}</span></div><center style="margin-top:20px; font-size:10px">${config.f}</center>`;
+            window.print();
+        }
+
+        function renderHistory() {
+            document.getElementById('history-list').innerHTML = receipts.map((r, i) => `
+                <div class="bg-white p-6 rounded-[2.5rem] border shadow-sm ${r.status === 'VOID' ? 'opacity-30' : ''}">
+                    <div class="flex justify-between mb-4"><div><p class="text-[9px] font-black text-slate-300 uppercase tracking-tighter">${r.id}</p><p class="text-2xl font-black text-green-700">₱${r.total.toLocaleString()}</p></div><p class="text-[10px] text-slate-400 font-bold">${r.date}</p></div>
+                    <div class="flex gap-2">
+                        <button onclick="printReceipt(receipts[${i}])" class="bg-green-100 text-green-700 flex-1 py-3 rounded-2xl text-xs font-black uppercase active:bg-green-200">Reprint</button>
+                        ${r.status !== 'VOID' ? `<button onclick="voidTx(${i})" class="bg-red-50 text-red-500 flex-1 py-3 rounded-2xl text-xs font-black uppercase active:bg-red-100">Void</button>` : ''}
+                    </div>
+                </div>`).join('');
+        }
+
+        function voidTx(idx) {
+            if(confirm("Void sale and restore stocks?")) {
+                const tx = receipts[idx];
+                tx.status = 'VOID';
+                tx.items.forEach(ci => { const m = items.find(i => i.id === ci.id); if(m) m.stock += ci.qty; });
+                sync(); renderHistory(); renderSales();
+            }
+        }
+
+        function renderInventory() {
+            document.getElementById('inventory-list').innerHTML = items.map((i, idx) => `
+                <div class="bg-slate-50 p-4 rounded-3xl border flex justify-between items-center shadow-inner">
+                    <div class="flex items-center gap-4"><img src="${i.img || 'https://via.placeholder.com/50'}" class="w-12 h-12 object-cover rounded-xl"><div><p class="font-black text-xs uppercase text-slate-700">${i.name}</p><p class="text-[9px] text-green-600 font-mono">${i.barcode || 'NO BARCODE'}</p></div></div>
+                    <div class="text-right"><p class="font-black">₱${i.price}</p><p class="text-[10px] text-slate-400 font-bold">Qty: ${i.stock}</p><button onclick="if(confirm('Delete?')){items.splice(${idx},1);sync();renderInventory();}" class="text-red-300 text-[8px] font-black uppercase">Delete</button></div>
+                </div>`).join('');
+        }
+
+        function saveItem() {
+            const n = document.getElementById('inp-name').value;
+            const p = parseFloat(document.getElementById('inp-price').value);
+            const s = parseInt(document.getElementById('inp-stock').value);
+            const b = document.getElementById('inp-barcode').value;
+            if(!n || isNaN(p)) return alert("Missing product info");
+            items.push({ id: Date.now(), name: n, price: p, stock: s, barcode: b, img: activeImg });
+            sync(); closeItemModal(); renderSales(); renderInventory();
+        }
+
+        function exportCSV() {
+            let csv = "Invoice,Date,Item,Price,Qty,Total,Status\n";
+            receipts.forEach(r => r.items.forEach(i => { csv += `${r.id},${r.date},"${i.name}",${i.price},${i.qty},${i.price * i.qty},${r.status}\n` }));
+            const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([csv], {type:'text/csv'})); a.download=`JMB_Sales_${new Date().toLocaleDateString()}.csv`; a.click();
+        }
+
+        function handleImg(inp) { const reader = new FileReader(); reader.onload = (e) => { activeImg = e.target.result; document.getElementById('prev-img').src = activeImg; }; reader.readAsDataURL(inp.files[0]); }
+        function openItemModal() { activeImg = null; document.getElementById('prev-img').src = "https://via.placeholder.com/150"; document.getElementById('item-modal').classList.remove('hidden'); }
+        function closeItemModal() { document.getElementById('item-modal').classList.add('hidden'); }
+        function loadSet() { document.getElementById('set-h').value = config.h; document.getElementById('set-s').value = config.s; document.getElementById('set-f').value = config.f; document.getElementById('set-size').value = config.size; }
+        function saveSet() { config.h = document.getElementById('set-h').value; config.s = document.getElementById('set-s').value; config.f = document.getElementById('set-f').value; config.size = document.getElementById('set-size').value; sync(); }
+        function clearCart() { if(confirm("Clear ticket?")){ cart = []; updateCartUI(); }}
+
+        // STARTUP
+        renderSales();
+    </script>
+</body>
+</html>
